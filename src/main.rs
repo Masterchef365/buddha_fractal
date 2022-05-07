@@ -1,5 +1,7 @@
 // For reading and opening files
 use anyhow::Result;
+use rand::distributions::Uniform;
+use rand::prelude::*;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -30,40 +32,62 @@ struct Opt {
     /// Image scale
     #[structopt(short, long, default_value = "1.0")]
     scale: f32,
+
+    /// Total iterations
+    #[structopt(short, long, default_value = "10000000")]
+    iters: usize,
+
+    /// Max steps per iteration 
+    #[structopt(short, long, default_value = "1500")]
+    steps: usize,
 }
 
-fn mandelbrot(x: f32, y: f32, iters: usize) -> Option<usize> {
-    let (mut a, mut b) = (x, y);
-    for i in 1..=iters {
+fn mandelbrot(x: f32, y: f32) -> impl Iterator<Item = (f32, f32)> {
+    let (mut a, mut b) = (0., 0.);
+    std::iter::from_fn(move || {
         let tmp = a * a - b * b + x;
         b = 2. * a * b + y;
         a = tmp;
 
         if a * a + b * b > 2. * 2. {
-            return Some(i);
+            None
+        } else {
+            Some((a, b))
         }
-    }
-
-    None
+    })
 }
 
 fn main() -> Result<()> {
     let args = Opt::from_args();
     let mut image_data = vec![0_u8; args.width * args.height];
 
-    let scale = |x: f32| (x * 2. - 1.) * args.scale;
+    //let scale = |x: f32| (x * 2. - 1.) * args.scale;
+    let scale = |x: f32| ((x / args.scale) + 1.) / 2.;
 
     let aspect = args.width as f32 / args.height as f32;
 
-    for (row_idx, row) in image_data.chunks_exact_mut(args.width).enumerate() {
-        let y = scale(row_idx as f32 / args.height as f32) + args.center_y;
+    let mut steps = Vec::with_capacity(args.steps);
+    for (idx, (x, y)) in disc(2.).take(args.iters).enumerate() {
+        steps.clear();
+        steps.extend(mandelbrot(x, y).take(args.steps));
 
-        for (col_idx, elem) in row.iter_mut().enumerate() {
-            let x = scale((col_idx as f32 / args.width as f32)) * aspect + args.center_x;
+        if idx % 100_000 == 0 {
+            println!("{}/{} ({}%)", idx, args.iters, idx * 100 / args.iters);
+        }
 
-            let m = mandelbrot(x, y, 255).unwrap_or(0);
+        if steps.len() != args.steps {
+            for (x, y) in steps.drain(..) {
+                let x = scale((x - args.center_x) / aspect) * args.width as f32;
+                let y = scale(y - args.center_y) * args.height as f32;
 
-            *elem = m as u8;
+                let bound_x = x >= 0. && x < args.width as f32;
+                let bound_y = y >= 0. && y < args.height as f32;
+
+                if bound_x && bound_y {
+                    let idx = x as usize + y as usize * args.width;
+                    image_data[idx] = image_data[idx].saturating_add(1);
+                }
+            }
         }
     }
 
@@ -73,6 +97,13 @@ fn main() -> Result<()> {
         args.width as u32,
         args.height as u32,
     )
+}
+
+fn disc(radius: f32) -> impl Iterator<Item = (f32, f32)> {
+    let unif = Uniform::new(-radius, radius);
+    unif.sample_iter(rand::thread_rng())
+        .zip(unif.sample_iter(rand::thread_rng()))
+        .filter(move |(x, y)| x * x + y * y < radius * radius)
 }
 
 fn write_png(path: &Path, data: &[u8], width: u32, height: u32) -> Result<()> {
