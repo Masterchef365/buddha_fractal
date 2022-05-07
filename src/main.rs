@@ -5,9 +5,12 @@ use rand::prelude::*;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+use std::thread::{available_parallelism, JoinHandle};
 use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+type Image = Vec<u16>;
+
+#[derive(Debug, Clone, StructOpt)]
 struct Opt {
     /// Output path
     #[structopt(default_value = "out.png")]
@@ -37,7 +40,7 @@ struct Opt {
     #[structopt(short, long, default_value = "10000000")]
     iters: usize,
 
-    /// Max steps per iteration 
+    /// Max steps per iteration
     #[structopt(short, long, default_value = "1500")]
     steps: usize,
 }
@@ -57,22 +60,20 @@ fn mandelbrot(x: f32, y: f32) -> impl Iterator<Item = (f32, f32)> {
     })
 }
 
-fn main() -> Result<()> {
-    let args = Opt::from_args();
-    let mut image_data = vec![0_u8; args.width * args.height];
+fn worker_thread(args: Opt, iters: usize) -> Image {
+    let mut image_data = vec![0_u16; args.width * args.height];
 
-    //let scale = |x: f32| (x * 2. - 1.) * args.scale;
     let scale = |x: f32| ((x / args.scale) + 1.) / 2.;
 
     let aspect = args.width as f32 / args.height as f32;
 
     let mut steps = Vec::with_capacity(args.steps);
-    for (idx, (x, y)) in disc(2.).take(args.iters).enumerate() {
+    for (idx, (x, y)) in disc(2.).take(iters).enumerate() {
         steps.clear();
         steps.extend(mandelbrot(x, y).take(args.steps));
 
         if idx % 100_000 == 0 {
-            println!("{}/{} ({}%)", idx, args.iters, idx * 100 / args.iters);
+            println!("{}/{} ({}%)", idx, iters, idx * 100 / iters);
         }
 
         if steps.len() != args.steps {
@@ -91,9 +92,49 @@ fn main() -> Result<()> {
         }
     }
 
+    image_data
+}
+
+fn main() -> Result<()> {
+    let args = Opt::from_args();
+
+    // Divide work
+    let n_workers = available_parallelism().map(|v| v.get()).unwrap_or(1);
+    let iters_per_worker = args.iters / n_workers;
+
+    // Spawn workers
+    let workers: Vec<JoinHandle<Image>> = (0..n_workers)
+        .map(|_| {
+            let args = args.clone();
+            std::thread::spawn(move || worker_thread(args, iters_per_worker))
+        })
+        .collect();
+
+    // Collect results
+    let mut images: Vec<Image> = workers
+        .into_iter()
+        .map(|w| w.join().expect("Worker failed"))
+        .collect();
+
+    // Sum images
+    let mut out_image = images.pop().unwrap();
+    for image in images {
+        out_image
+            .iter_mut()
+            .zip(image.iter())
+            .for_each(|(o, i)| *o = o.saturating_add(*i));
+    }
+
+    // Determine coloring
+    let out_image: Vec<u8> = out_image
+        .into_iter()
+        .map(|i| (i >> 1).min(u8::MAX as u16) as u8)
+        .collect();
+
+    // Write results
     write_png(
         &args.out_path,
-        &image_data,
+        &out_image,
         args.width as u32,
         args.height as u32,
     )
