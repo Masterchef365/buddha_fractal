@@ -33,7 +33,7 @@ struct Opt {
     center_y: f32,
 
     /// Image scale
-    #[structopt(short, long, default_value = "1.0")]
+    #[structopt(long, default_value = "1.0")]
     scale: f32,
 
     /// Cutoff disc radius. Optimally 2.0, 
