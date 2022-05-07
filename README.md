@@ -1,0 +1,1 @@
+![The Buddha](nice.png)
